@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Giriş - Bot Panel</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header><span class="brand" style="font-size:16px;font-weight:700">Bot Panel</span></header>
+<div class="login-wrap">
+  <form class="card login-box" id="f">
+    <h2>Giriş yap</h2>
+    <label for="u">Kullanıcı adı</label>
+    <input type="text" id="u" autocomplete="username" autocapitalize="off" spellcheck="false" autofocus>
+    <label for="p">Şifre</label>
+    <input type="password" id="p" autocomplete="current-password">
+    <div class="err" id="err" role="alert"></div>
+    <button type="submit">Giriş</button>
+  </form>
+</div>
+<script src="/static/common.js"></script>
+<script>
+document.getElementById('f').addEventListener('submit', async e => {
+  e.preventDefault();
+  const err = document.getElementById('err');
+  err.textContent = '';
+  try {
+    await api('/api/login', { method: 'POST', body: JSON.stringify({
+      name: document.getElementById('u').value,
+      password: document.getElementById('p').value
+    }) });
+    location.href = '/';
+  } catch (ex) { err.textContent = ex.message; }
+});
+</script>
+</body>
+</html>

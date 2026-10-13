@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Veritabanı - Bot Panel</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+.dbgrid{display:grid;grid-template-columns:240px minmax(0,1fr);gap:16px;margin-top:16px}
+.tl a{display:flex;justify-content:space-between;gap:8px;padding:9px 16px;border-left:3px solid transparent;cursor:pointer;color:var(--muted)}
+.tl a:hover{color:#fff}
+.tl a.active{color:#fff;background:#232d3d;border-left-color:var(--blue)}
+.tl small{color:var(--muted)}
+.tabs{display:flex;gap:4px;padding:8px 12px;border-bottom:1px solid var(--line)}
+.tabs button{background:transparent;color:var(--muted)}
+.tabs button.active{background:#232d3d;color:#fff}
+.pager{display:flex;align-items:center;gap:10px;padding:10px 16px;border-top:1px solid var(--line)}
+.data th,.data td{padding:7px 12px;font-size:13px;max-width:360px;overflow-wrap:anywhere}
+.data td{font-family:ui-monospace,Consolas,Menlo,monospace}
+.data th{cursor:pointer;white-space:nowrap}
+.null{color:var(--muted);font-style:italic}
+pre.sql{margin:0;padding:12px 16px;border-top:1px solid var(--line);background:#080b10;font:13px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow-x:auto}
+textarea.q{height:140px}
+select{background:#0e131b;border:1px solid var(--line);color:var(--text);padding:7px 10px;border-radius:5px;font:inherit;max-width:100%}
+@media(max-width:860px){.dbgrid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header id="top"></header>
+<div class="wrap">
+  <nav id="nav"></nav>
+  <main>
+    <section class="card">
+      <div class="head">
+        <span>Veritabanı</span>
+        <select id="fsel" aria-label="Veritabanı dosyası"></select>
+        <span class="sp"></span>
+        <button class="b-ghost sm" onclick="loadFiles()">Yenile</button>
+      </div>
+      <div class="empty" id="nofile" hidden>
+        Bu botun klasöründe .db, .sqlite, .sqlite3 veya .db3 dosyası yok.
+        Botun bir veritabanı oluşturduğunda burada görünür.
+      </div>
+    </section>
+
+    <div class="dbgrid" id="work" hidden>
+      <section class="card">
+        <h3>Tablolar</h3>
+        <div class="tl" id="tl"></div>
+        <div class="empty" id="tempty" hidden>Tablo yok</div>
+      </section>
+      <section class="card">
+        <div class="tabs">
+          <button id="t-browse" onclick="setTab('browse')">Gözat</button>
+          <button id="t-structure" onclick="setTab('structure')">Yapı</button>
+          <button id="t-sql" onclick="setTab('sql')">SQL</button>
+        </div>
+        <div id="pane"></div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script src="/static/common.js"></script>
+<script>
+layout('db');
+const id = qs('id') || '';
+let file = qs('file') || '', table = '', tab = 'browse', page = 1, sort = '', dir = 'asc';
+let tables = [], sqlText = '';
+const fsel = document.getElementById('fsel');
+const pane = document.getElementById('pane');
+const base = () => 'id=' + encodeURIComponent(id) + '&file=' + encodeURIComponent(file);
+const fail = e => toast(e.message, true);
+
+function loadFiles() {
+  api('/api/db/files?id=' + encodeURIComponent(id)).then(list => {
+    fsel.replaceChildren(...list.map(f => el('option', { value: f.path }, f.path + ' (' + fmtSize(f.size) + ')')));
+    document.getElementById('nofile').hidden = list.length > 0;
+    document.getElementById('work').hidden = list.length === 0;
+    if (!list.length) return;
+    if (!list.some(f => f.path === file)) file = list[0].path;
+    fsel.value = file;
+    loadTables(false);
+  }).catch(fail);
+}
+fsel.addEventListener('change', () => { file = fsel.value; table = ''; loadTables(false); });
+
+function drawList() {
+  document.getElementById('tl').replaceChildren(...tables.map(t =>
+    el('a', { class: t.name === table ? 'active' : '', onclick: () => pick(t.name) },
+      el('span', {}, (t.type === 'view' ? 'görünüm: ' : '') + t.name),
+      el('small', {}, t.rows < 0 ? '?' : String(t.rows)))));
+  document.getElementById('tempty').hidden = tables.length > 0;
+}
+
+function loadTables(keepPane) {
+  api('/api/db/tables?' + base()).then(list => {
+    tables = list;
+    const changed = !list.some(t => t.name === table);
+    if (changed) { table = list.length ? list[0].name : ''; page = 1; sort = ''; dir = 'asc'; }
+    drawList();
+    if (!keepPane || changed) render();
+  }).catch(e => { tables = []; drawList(); pane.replaceChildren(el('div', { class: 'empty' }, e.message)); });
+}
+
+function pick(name) { table = name; page = 1; sort = ''; dir = 'asc'; drawList(); render(); }
+function setTab(t) { tab = t; render(); }
+
+function render() {
+  ['browse', 'structure', 'sql'].forEach(t =>
+    document.getElementById('t-' + t).className = t === tab ? 'active' : '');
+  if (tab === 'sql') return sqlTab();
+  if (!table) { pane.replaceChildren(el('div', { class: 'empty' }, 'Soldan bir tablo seç.')); return; }
+  if (tab === 'structure') structure(); else browse();
+}
+
+function dataTable(cols, rows, sortable) {
+  return el('table', { class: 'data' },
+    el('thead', {}, el('tr', {}, cols.map(c => el('th',
+      sortable ? { onclick: () => { if (sort === c) dir = dir === 'asc' ? 'desc' : 'asc'; else { sort = c; dir = 'asc'; } page = 1; browse(); } } : {},
+      c + (sortable && sort === c ? (dir === 'asc' ? ' ▲' : ' ▼') : ''))))),
+    el('tbody', {}, rows.length
+      ? rows.map(r => el('tr', {}, r.map(v => el('td', {}, v === null ? el('span', { class: 'null' }, 'NULL') : String(v)))))
+      : el('tr', {}, el('td', { colspan: cols.length || 1, class: 'empty' }, 'Satır yok'))));
+}
+
+function browse() {
+  api('/api/db/browse?' + base() + '&table=' + encodeURIComponent(table) + '&page=' + page +
+      '&sort=' + encodeURIComponent(sort) + '&dir=' + dir).then(d => {
+    const prev = el('button', { class: 'sm b-ghost', onclick: () => { page--; browse(); } }, 'Önceki');
+    const next = el('button', { class: 'sm b-ghost', onclick: () => { page++; browse(); } }, 'Sonraki');
+    prev.disabled = d.page <= 1;
+    next.disabled = d.page >= d.pages;
+    pane.replaceChildren(
+      el('div', { class: 'tbl-wrap' }, dataTable(d.columns, d.rows, true)),
+      el('div', { class: 'pager' }, prev, next,
+        el('span', { class: 'muted' }, 'Sayfa ' + d.page + ' / ' + d.pages + ' (toplam ' + d.total + ' satır)')));
+  }).catch(e => pane.replaceChildren(el('div', { class: 'empty' }, e.message)));
+}
+
+function structure() {
+  api('/api/db/structure?' + base() + '&table=' + encodeURIComponent(table)).then(d => {
+    pane.replaceChildren(
+      el('div', { class: 'tbl-wrap' }, el('table', { class: 'data' },
+        el('thead', {}, el('tr', {}, ['Sütun', 'Tür', 'Boş olabilir', 'Varsayılan', 'Anahtar'].map(h => el('th', {}, h)))),
+        el('tbody', {}, d.columns.map(c => el('tr', {},
+          el('td', {}, c.name), el('td', {}, c.type || '-'), el('td', {}, c.notnull ? 'Hayır' : 'Evet'),
+          el('td', {}, c.dflt || '-'), el('td', {}, c.pk ? 'Birincil (' + c.pk + ')' : '-')))))),
+      d.indexes.length
+        ? el('div', { style: 'padding:12px 16px;border-top:1px solid var(--line)' },
+            'İndeksler: ' + d.indexes.map(i => i.name + (i.unique ? ' (benzersiz)' : '')).join(', '))
+        : null,
+      el('pre', { class: 'sql' }, d.sql || ''));
+  }).catch(e => pane.replaceChildren(el('div', { class: 'empty' }, e.message)));
+}
+
+function sqlTab() {
+  const ta = el('textarea', { class: 'q', spellcheck: 'false' });
+  ta.value = sqlText || (table ? 'SELECT * FROM "' + table + '" LIMIT 50;' : '');
+  ta.addEventListener('input', () => sqlText = ta.value);
+  const wr = el('input', { type: 'checkbox', id: 'wr' });
+  wr.disabled = !can('db.write');
+  if (wr.disabled) wr.title = 'Veritabanına yazma yetkin yok';
+  const out = el('div', {});
+
+  const run = () => {
+    api('/api/db/query?' + base() + (wr.checked ? '&write=1' : ''), { method: 'POST', body: ta.value }).then(d => {
+      if (d.columns) {
+        out.replaceChildren(
+          el('div', { class: 'muted', style: 'padding:0 16px 8px' },
+            d.rows.length + ' satır, ' + d.ms + ' ms' + (d.truncated ? ' (ilk 1000 satır gösteriliyor)' : '')),
+          el('div', { class: 'tbl-wrap' }, dataTable(d.columns, d.rows, false)));
+      } else {
+        out.replaceChildren(el('div', { style: 'padding:0 16px 12px' }, 'Tamam. Etkilenen satır: ' + d.affected + ' (' + d.ms + ' ms)'));
+        loadTables(true);
+      }
+    }).catch(e => out.replaceChildren(el('div', { style: 'padding:0 16px 12px;color:var(--red)' }, e.message)));
+  };
+  ta.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); run(); } });
+
+  pane.replaceChildren(
+    el('div', { style: 'padding:16px' }, ta,
+      el('div', { style: 'display:flex;align-items:center;gap:14px;margin-top:10px;flex-wrap:wrap' },
+        el('button', { onclick: run }, 'Çalıştır'),
+        el('label', { style: 'margin:0;display:flex;align-items:center;gap:6px' }, wr, 'Yazmaya izin ver (INSERT, UPDATE, DELETE...)'),
+        el('span', { class: 'muted' }, 'Ctrl+Enter'))),
+    out);
+}
+
+loadFiles();
+</script>
+</body>
+</html>

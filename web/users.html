@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hesaplar - Bot Panel</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header id="top"></header>
+<div class="wrap">
+  <nav id="nav"></nav>
+  <main>
+    <section class="card">
+      <div class="head">
+        <span>Hesaplar</span><span class="sp"></span>
+        <button id="btn-new" onclick="openCreate()" hidden>Yeni hesap</button>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Hesap</th><th>Üst hesap</th><th>Yetkiler</th><th>Dosya engeli</th><th></th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="empty" hidden>Henüz alt hesap yok.</div>
+      <div class="note">
+        Kurallar: yalnızca kendi oluşturduğun hesapları (ve onların altındakileri) yönetebilirsin.
+        Bir yetkiyi ancak sen ve hesabın üst hesabı sahipse verebilirsin. Alınan yetki, o hesabın altındakilerden de alınır.
+        Dosya engelleri alt hesaplara miras kalır.
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog id="dc" class="mid">
+  <h3>Yeni hesap</h3>
+  <label for="c-name">Kullanıcı adı</label>
+  <input type="text" id="c-name" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="32">
+  <label for="c-pass">Şifre (en az 8 karakter)</label>
+  <input type="password" id="c-pass" autocomplete="new-password">
+  <div id="c-perms-box">
+    <label>Başlangıç yetkileri</label>
+    <div class="permgrid" id="c-perms"></div>
+  </div>
+  <div class="note" id="c-noperm" hidden style="padding:8px 0;border:0">Yetki verme yetkin olmadığı için hesap yetkisiz oluşur; yetkiyi sonra yetki verebilen biri tanımlar.</div>
+  <div class="foot">
+    <button class="b-ghost" onclick="dc.close()">Vazgeç</button>
+    <button onclick="createUser()">Oluştur</button>
+  </div>
+</dialog>
+
+<dialog id="dp" class="mid">
+  <h3 id="dp-title"></h3>
+  <div class="warnbox">⚠ işaretli yetkiler (komut gönderme, dosya yazma/yükleme) birleşince sunucuda Python kodu çalıştırmak anlamına gelir. Bunu yalnızca güvendiğin hesaplara ver.</div>
+  <div class="permgrid" id="dp-perms"></div>
+  <div class="foot">
+    <button class="b-ghost" onclick="dp.close()">Vazgeç</button>
+    <button onclick="savePerms()">Kaydet</button>
+  </div>
+</dialog>
+
+<dialog id="dd" class="mid">
+  <h3 id="dd-title"></h3>
+  <div class="rules" id="dd-rules"></div>
+  <div class="row2">
+    <div><label for="dd-bot">Bot</label><select id="dd-bot"></select></div>
+    <div><label for="dd-path">Yol (boş = botun tüm dosyaları)</label>
+      <input type="text" id="dd-path" placeholder="örn: data/ayarlar.json" autocomplete="off" spellcheck="false"></div>
+  </div>
+  <div class="note" style="padding:8px 0;border:0">Engellenen yol; listede görünmez, okunamaz, indirilemez, değiştirilemez, silinemez ve üzerine yüklenemez. Alt hesaplara da uygulanır.</div>
+  <div class="foot">
+    <button class="b-ghost" onclick="dd.close()">Kapat</button>
+    <button class="b-red" id="dd-add" onclick="addDeny()">Engelle</button>
+  </div>
+</dialog>
+
+<script src="/static/common.js"></script>
+<script>
+layout('users');
+const dc = document.getElementById('dc'), dp = document.getElementById('dp'), dd = document.getElementById('dd');
+let catalog = [], users = [], bots = [], cur = null;
+const fail = e => toast(e.message, true);
+const post = (url, body) => api(url, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
+const label = k => (catalog.find(p => p.key === k) || { label: k }).label;
+
+function permList(box, items) { // items: [{key, checked, disabled, why}]
+  box.replaceChildren();
+  let group = '';
+  items.forEach(it => {
+    const def = catalog.find(p => p.key === it.key);
+    if (def.group !== group) { group = def.group; box.append(el('h4', {}, group)); }
+    const cb = el('input', { type: 'checkbox' });
+    cb.checked = !!it.checked; cb.disabled = !!it.disabled; cb.dataset.key = it.key;
+    const row = el('label', { class: 'perm' + (it.disabled ? ' off' : ''), title: it.why || '' },
+      cb, el('span', {}, (def.danger ? '⚠ ' : '') + def.label));
+    box.append(row);
+  });
+}
+
+function render() {
+  const rows = document.getElementById('rows');
+  rows.replaceChildren(...users.map(u => el('tr', {},
+    el('td', {}, el('div', { class: 'namecell', style: 'padding-left:' + (u.depth * 20) + 'px' },
+      (u.depth ? '↳ ' : '') , el('strong', {}, u.name))),
+    el('td', { class: 'muted' }, u.parent),
+    el('td', {}, u.perms.length
+      ? u.perms.map(k => el('span', { class: 'tag', title: label(k) }, k))
+      : el('span', { class: 'muted' }, 'yetkisiz')),
+    el('td', { class: 'muted' }, u.deny.length ? u.deny.length + ' kural' : '-'),
+    el('td', { class: 'act' },
+      el('button', { class: 'sm b-ghost', onclick: () => openPerms(u) }, 'Yetkiler'),
+      el('button', { class: 'sm b-ghost', onclick: () => openDeny(u) }, 'Dosya engelleri'),
+      !can('users.delete') ? null : el('button', { class: 'sm b-red', onclick: () => delUser(u) }, 'Sil')
+    ))));
+  document.getElementById('empty').hidden = users.length > 0;
+}
+
+function load() {
+  return api('/api/users').then(l => { users = l; render(); }).catch(e => {
+    const em = document.getElementById('empty'); em.textContent = e.message; em.hidden = false;
+  });
+}
+
+// ----- hesap oluştur -----
+function openCreate() {
+  document.getElementById('c-name').value = '';
+  document.getElementById('c-pass').value = '';
+  const canGrant = can('perms.grant');
+  document.getElementById('c-perms-box').hidden = !canGrant;
+  document.getElementById('c-noperm').hidden = canGrant;
+  permList(document.getElementById('c-perms'), catalog
+    .filter(p => can(p.key)).map(p => ({ key: p.key, checked: false })));
+  dc.showModal();
+  document.getElementById('c-name').focus();
+}
+
+async function createUser() {
+  const perms = [...document.querySelectorAll('#c-perms input:checked')].map(i => i.dataset.key);
+  try {
+    await post('/api/users/create', {
+      name: document.getElementById('c-name').value,
+      password: document.getElementById('c-pass').value,
+      perms: can('perms.grant') ? perms : []
+    });
+    dc.close(); toast('Hesap oluşturuldu'); load();
+  } catch (e) { fail(e); }
+}
+
+// ----- yetkiler -----
+function openPerms(u) {
+  cur = u;
+  document.getElementById('dp-title').textContent = u.name + ' - yetkiler';
+  permList(document.getElementById('dp-perms'), catalog.map(p => {
+    const has = u.perms.includes(p.key);
+    let disabled = false, why = '';
+    if (has && !can('perms.revoke')) { disabled = true; why = 'Yetki alma yetkin yok'; }
+    if (!has && !u.grantable.includes(p.key)) {
+      disabled = true;
+      why = !can('perms.grant') ? 'Yetki verme yetkin yok'
+        : !can(p.key) ? 'Bu yetki sende yok, veremezsin'
+        : 'Bu yetki hesabın üst hesabında yok';
+    }
+    return { key: p.key, checked: has, disabled, why };
+  }));
+  dp.showModal();
+}
+
+async function savePerms() {
+  const boxes = [...document.querySelectorAll('#dp-perms input')];
+  const add = boxes.filter(b => !b.disabled && b.checked && !cur.perms.includes(b.dataset.key)).map(b => b.dataset.key);
+  const drop = boxes.filter(b => !b.disabled && !b.checked && cur.perms.includes(b.dataset.key)).map(b => b.dataset.key);
+  try {
+    if (add.length) await post('/api/users/grant', { name: cur.name, perms: add });
+    if (drop.length) await post('/api/users/revoke', { name: cur.name, perms: drop });
+    dp.close(); toast('Yetkiler güncellendi'); load();
+  } catch (e) { fail(e); load(); }
+}
+
+// ----- dosya engelleri -----
+async function openDeny(u) {
+  cur = u;
+  document.getElementById('dd-title').textContent = u.name + ' - dosya engelleri';
+  const sel = document.getElementById('dd-bot');
+  sel.replaceChildren(el('option', { value: '*' }, 'Tüm botlar'));
+  try { bots = await api('/api/bots'); } catch (e) { bots = []; }
+  bots.forEach(b => sel.append(el('option', { value: b.id }, b.name)));
+  document.getElementById('dd-path').value = '';
+  document.getElementById('dd-add').disabled = !can('perms.revoke');
+  renderDeny();
+  if (!dd.open) dd.showModal();
+}
+
+function renderDeny() {
+  const box = document.getElementById('dd-rules');
+  const botName = id => id === '*' ? 'Tüm botlar' : ((bots.find(b => b.id === id) || {}).name || id);
+  box.replaceChildren(...(cur.deny.length ? cur.deny.map(r => el('div', { class: 'rule' },
+    el('code', {}, botName(r.bot) + ' : ' + (r.path || '(tüm dosyalar)')),
+    !can('perms.grant') ? null : el('button', { class: 'sm b-ghost', onclick: () => rmDeny(r) }, 'Kaldır')
+  )) : [el('div', { class: 'muted' }, 'Bu hesaba özel dosya engeli yok.')]));
+}
+
+async function addDeny() {
+  try {
+    await post('/api/users/deny/add', { name: cur.name, bot: document.getElementById('dd-bot').value, path: document.getElementById('dd-path').value });
+    toast('Engel eklendi');
+    await load(); cur = users.find(x => x.name === cur.name) || cur; renderDeny();
+    document.getElementById('dd-path').value = '';
+  } catch (e) { fail(e); }
+}
+
+async function rmDeny(r) {
+  try {
+    await post('/api/users/deny/remove', { name: cur.name, bot: r.bot, path: r.path });
+    toast('Engel kaldırıldı');
+    await load(); cur = users.find(x => x.name === cur.name) || cur; renderDeny();
+  } catch (e) { fail(e); }
+}
+
+// ----- sil -----
+async function delUser(u) {
+  const kids = users.filter(x => x.parent === u.name).length;
+  const msg = '"' + u.name + '" hesabı silinecek.' + (kids ? '\nBu hesabın oluşturduğu alt hesaplar da silinir.' : '') + '\nEmin misin?';
+  if (!confirm(msg)) return;
+  try { await post('/api/users/delete?name=' + encodeURIComponent(u.name)); toast('Hesap silindi'); load(); }
+  catch (e) { fail(e); }
+}
+
+meReady.then(async () => {
+  if (!ME || !ME.manage) { document.getElementById('empty').textContent = 'Hesap yönetimi yetkin yok.'; document.getElementById('empty').hidden = false; return; }
+  catalog = await api('/api/perms');
+  document.getElementById('btn-new').hidden = !can('users.create');
+  load();
+});
+</script>
+</body>
+</html>

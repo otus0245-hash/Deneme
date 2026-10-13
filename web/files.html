@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dosyalar - Bot Panel</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+.crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 16px;border-bottom:1px solid var(--line)}
+.crumbs a{color:var(--blue);cursor:pointer}
+.crumbs a:hover{text-decoration:underline}
+.crumbs span{color:var(--muted)}
+.fname{cursor:pointer;font-weight:500}
+.fname:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<header id="top"></header>
+<div class="wrap">
+  <nav id="nav"></nav>
+  <main>
+    <section class="card">
+      <div class="head">
+        <span>Dosyalar</span><span class="sp"></span>
+        <button class="b-ghost sm" id="b-newfile" onclick="newFile()" hidden>Yeni dosya</button>
+        <button class="b-ghost sm" id="b-newdir" onclick="newFolder()" hidden>Yeni klasör</button>
+        <button class="sm" id="b-up" onclick="document.getElementById('up').click()" hidden>Yükle</button>
+        <input type="file" id="up" multiple hidden>
+      </div>
+      <div class="muted" id="dirpath" style="padding:8px 16px;border-bottom:1px solid var(--line);font-size:13px"></div>
+      <div class="crumbs" id="crumbs"></div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Ad</th><th>Boyut</th><th>Değiştirilme</th><th></th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="empty" hidden>Bu klasör boş. Dosya yükleyebilir ya da yeni dosya oluşturabilirsin.</div>
+    </section>
+  </main>
+</div>
+
+<dialog id="ed" class="wide">
+  <h3 id="ed-title"></h3>
+  <textarea id="ed-text" spellcheck="false"></textarea>
+  <div class="foot">
+    <button class="b-ghost" onclick="ed.close()">Kapat</button>
+    <button id="ed-save" onclick="saveFile()">Kaydet</button>
+  </div>
+</dialog>
+
+<script src="/static/common.js"></script>
+<script>
+layout('files');
+const id = qs('id') || '';
+api('/api/bot/info?id=' + encodeURIComponent(id)).then(i => {
+  document.getElementById('dirpath').textContent = 'Klasör: ' + i.dir;
+});
+const ed = document.getElementById('ed');
+let cwd = '';        // bot klasörüne göre şu anki klasör, örn: "cogs/music"
+let editPath = null;
+
+const join = (a, b) => a ? a + '/' + b : b;
+const q = p => 'id=' + encodeURIComponent(id) + '&path=' + encodeURIComponent(p);
+const fail = e => toast(e.message, true);
+
+function crumbs() {
+  const box = document.getElementById('crumbs');
+  box.replaceChildren(el('a', { onclick: () => go('') }, 'Ana klasör'));
+  let acc = '';
+  cwd.split('/').filter(Boolean).forEach(part => {
+    acc = join(acc, part);
+    const target = acc;
+    box.append(el('span', {}, '/'), el('a', { onclick: () => go(target) }, part));
+  });
+}
+
+function go(p) { cwd = p; load(); }
+
+function load() {
+  crumbs();
+  api('/api/files/list?' + q(cwd)).then(list => {
+    document.getElementById('rows').replaceChildren(...list.map(f => {
+      const full = join(cwd, f.name);
+      return el('tr', {},
+        el('td', {}, el('span', { class: 'fname', onclick: () => f.dir ? go(full) : openFile(full) },
+          (f.dir ? '📁 ' : '📄 ') + f.name)),
+        el('td', { class: 'muted' }, f.dir ? '-' : fmtSize(f.size)),
+        el('td', { class: 'muted' }, new Date(f.mod * 1000).toLocaleString('tr-TR')),
+        el('td', { class: 'act' },
+          f.dir ? null : el('a', { class: 'btn sm b-ghost', href: '/api/files/download?' + q(full) }, 'İndir'),
+          f.dir || !/\.(db|sqlite3?|db3)$/i.test(f.name) ? null :
+            el('a', { class: 'btn sm b-ghost', href: '/db?id=' + encodeURIComponent(id) + '&file=' + encodeURIComponent(full) }, 'Veritabanı'),
+          !can('files.write') ? null : el('button', { class: 'sm b-ghost', onclick: () => rename(full, f.name) }, 'Adı değiştir'),
+          !can('files.delete') ? null : el('button', { class: 'sm b-red', onclick: () => del(full, f.name) }, 'Sil')
+        ));
+    }));
+    document.getElementById('empty').hidden = list.length > 0;
+  }).catch(fail);
+}
+
+function openFile(path) {
+  api('/api/files/read?' + q(path)).then(text => {
+    editPath = path;
+    document.getElementById('ed-title').textContent = path;
+    document.getElementById('ed-text').value = text;
+    document.getElementById('ed-text').readOnly = !can('files.write');
+    document.getElementById('ed-save').hidden = !can('files.write');
+    ed.showModal();
+  }).catch(fail);
+}
+
+function saveFile() {
+  api('/api/files/write?' + q(editPath), { method: 'POST', body: document.getElementById('ed-text').value })
+    .then(() => { toast('Kaydedildi'); load(); }).catch(fail);
+}
+
+// Tab tuşu textarea içinde girinti eklesin
+document.getElementById('ed-text').addEventListener('keydown', e => {
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    const t = e.target, s = t.selectionStart;
+    t.value = t.value.slice(0, s) + '    ' + t.value.slice(t.selectionEnd);
+    t.selectionStart = t.selectionEnd = s + 4;
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveFile(); }
+});
+
+function newFile() {
+  const n = prompt('Yeni dosya adı (örn: config.json):');
+  if (!n) return;
+  api('/api/files/write?' + q(join(cwd, n.trim())), { method: 'POST', body: '' })
+    .then(() => { load(); openFile(join(cwd, n.trim())); }).catch(fail);
+}
+
+function newFolder() {
+  const n = prompt('Yeni klasör adı:');
+  if (!n) return;
+  api('/api/files/mkdir?' + q(join(cwd, n.trim())), { method: 'POST' }).then(load).catch(fail);
+}
+
+function rename(full, old) {
+  const n = prompt('Yeni ad:', old);
+  if (!n || n === old) return;
+  api('/api/files/rename?' + q(full) + '&to=' + encodeURIComponent(join(cwd, n.trim())), { method: 'POST' })
+    .then(load).catch(fail);
+}
+
+function del(full, name) {
+  if (!confirm('"' + name + '" silinecek. Emin misin?')) return;
+  api('/api/files/delete?' + q(full), { method: 'POST' }).then(() => { toast('Silindi'); load(); }).catch(fail);
+}
+
+document.getElementById('up').addEventListener('change', e => {
+  const fd = new FormData();
+  for (const f of e.target.files) fd.append('files', f);
+  api('/api/files/upload?' + q(cwd), { method: 'POST', body: fd })
+    .then(() => { toast('Yüklendi'); load(); }).catch(fail);
+  e.target.value = '';
+});
+
+meReady.then(() => {
+  document.getElementById('b-newfile').hidden = !can('files.write');
+  document.getElementById('b-newdir').hidden = !can('files.write');
+  document.getElementById('b-up').hidden = !can('files.upload');
+  load();
+});
+</script>
+</body>
+</html>

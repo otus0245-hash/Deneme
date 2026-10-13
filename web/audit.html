@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Günlük - Bot Panel</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+.lv{font-weight:600}
+.lv.info{color:var(--muted)} .lv.warn{color:var(--yellow)} .lv.alert{color:var(--red)}
+.data td{font-size:13px;overflow-wrap:anywhere}
+</style>
+</head>
+<body>
+<header id="top"></header>
+<div class="wrap">
+  <nav id="nav"></nav>
+  <main>
+    <section class="card">
+      <div class="head">
+        <span>Güvenlik günlüğü</span><span class="sp"></span>
+        <select id="lv" style="width:auto">
+          <option value="">Tümü</option>
+          <option value="warn">Uyarılar ve üstü</option>
+          <option value="alert">Sadece saldırı şüphesi</option>
+        </select>
+        <input type="text" id="flt" placeholder="kullanıcı, IP veya kelime" style="width:220px">
+        <button class="sm b-ghost" onclick="draw()">Yenile</button>
+      </div>
+      <div class="tbl-wrap">
+        <table class="data">
+          <thead><tr><th>Zaman</th><th>Seviye</th><th>Kullanıcı</th><th>IP</th><th>İşlem</th><th>Ayrıntı</th><th>Kod</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="empty" hidden>Kayıt yok.</div>
+    </section>
+  </main>
+</div>
+<script src="/static/common.js"></script>
+<script>
+layout('audit');
+let all = [];
+const rank = { info: 0, warn: 1, alert: 2 };
+
+function draw() {
+  const min = rank[document.getElementById('lv').value] || 0;
+  const f = document.getElementById('flt').value.toLowerCase();
+  const list = all.filter(e => rank[e.level] >= min &&
+    (!f || [e.user, e.ip, e.action, e.detail].join(' ').toLowerCase().includes(f)));
+  document.getElementById('rows').replaceChildren(...list.map(e => el('tr', {},
+    el('td', { class: 'muted' }, e.time),
+    el('td', { class: 'lv ' + e.level }, e.level),
+    el('td', {}, e.user || '-'),
+    el('td', {}, e.ip || '-'),
+    el('td', {}, e.action),
+    el('td', { class: 'muted' }, e.detail || ''),
+    el('td', {}, e.status ? String(e.status) : ''))));
+  document.getElementById('empty').hidden = list.length > 0;
+}
+
+function load() {
+  api('/api/audit').then(l => { all = l; draw(); }).catch(e => toast(e.message, true));
+}
+document.getElementById('lv').addEventListener('change', draw);
+document.getElementById('flt').addEventListener('input', draw);
+meReady.then(() => { load(); setInterval(load, 5000); });
+</script>
+</body>
+</html>

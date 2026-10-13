@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Konsol - Bot Panel</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:16px}
+.console{display:flex;flex-direction:column;height:calc(100vh - 124px);min-height:380px}
+#con{flex:1;background:#080b10;margin:0;padding:12px 14px;overflow-y:auto;font:13px/1.45 ui-monospace,Consolas,Menlo,monospace}
+#con div{white-space:pre-wrap;word-break:break-all}
+#con .p{color:#6aa3ff} #con .c{color:#e0a526} #con .e{color:#ff7b7b}
+.cmdrow{display:flex;align-items:center;background:#05070a;border-top:1px solid var(--line);border-radius:0 0 6px 6px}
+.cmdrow span{padding:0 6px 0 14px;color:var(--blue);font-family:ui-monospace,Consolas,monospace}
+#cmd{flex:1;background:transparent;border:0;color:#fff;padding:12px 8px;font:13px ui-monospace,Consolas,monospace;outline:none}
+.cmdrow:focus-within{box-shadow:inset 0 0 0 1px var(--blue)}
+.side{display:flex;flex-direction:column;gap:16px}
+.btns{padding:14px;display:grid;gap:8px}
+.btns button{padding:10px}
+.stats{padding:6px 16px 12px}
+.stat{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)}
+.stat:last-child{border:0}
+.stat em{font-style:normal;color:var(--muted)}
+@media(max-width:860px){.grid{grid-template-columns:1fr}.console{height:60vh}}
+</style>
+</head>
+<body>
+<header id="top"></header>
+<div class="wrap">
+  <nav id="nav"></nav>
+  <main>
+    <div class="grid">
+      <section class="card console">
+        <h3>Konsol</h3>
+        <div id="con" aria-live="polite"></div>
+        <div class="cmdrow">
+          <span>&gt;</span>
+          <input id="cmd" placeholder="Bota komut gönder, Enter ile onayla" autocomplete="off" spellcheck="false">
+        </div>
+      </section>
+      <aside class="side">
+        <section class="card">
+          <h3>Güç</h3>
+          <div class="btns">
+            <button class="b-green" id="b-start" onclick="act('start')">Başlat</button>
+            <button id="b-restart" onclick="act('restart')">Yeniden başlat</button>
+            <button class="b-warn" id="b-stop" onclick="act('stop')">Durdur</button>
+            <button class="b-red" id="b-kill" onclick="act('kill')">Zorla kapat</button>
+          </div>
+        </section>
+        <section class="card">
+          <h3>Durum</h3>
+          <div class="stats">
+            <div class="stat"><em>Durum</em><strong id="s-durum">Kapalı</strong></div>
+            <div class="stat"><em>Çalışma süresi</em><strong id="s-up">-</strong></div>
+            <div class="stat"><em>Bellek</em><strong id="s-mem">-</strong></div>
+          </div>
+        </section>
+      </aside>
+    </div>
+  </main>
+</div>
+<script src="/static/common.js"></script>
+<script>
+layout('console');
+const id = encodeURIComponent(qs('id') || '');
+const con = document.getElementById('con');
+const cmd = document.getElementById('cmd');
+const MAX = 1000;
+let next = 0, hist = [], hi = 0;
+
+function act(a) {
+  api('/api/bot/' + a + '?id=' + id, { method: 'POST' }).catch(e => toast(e.message, true));
+  setTimeout(poll, 300);
+}
+
+function send() {
+  const v = cmd.value;
+  if (!v) return;
+  api('/api/bot/send?id=' + id, { method: 'POST', body: v }).catch(e => toast(e.message, true));
+  hist.push(v); hi = hist.length; cmd.value = '';
+}
+cmd.addEventListener('keydown', e => {
+  if (e.key === 'Enter') send();
+  else if (e.key === 'ArrowUp' && hi > 0) { hi--; cmd.value = hist[hi]; e.preventDefault(); }
+  else if (e.key === 'ArrowDown') { hi = Math.min(hi + 1, hist.length); cmd.value = hist[hi] || ''; e.preventDefault(); }
+});
+
+function addLine(t) {
+  let c = '';
+  if (t.startsWith('[panel] Hata') || /Traceback|Error/.test(t)) c = 'e';
+  else if (t.startsWith('[panel]')) c = 'p';
+  else if (t.startsWith('> ')) c = 'c';
+  con.append(el('div', { class: c }, t));
+  while (con.childNodes.length > MAX) con.removeChild(con.firstChild);
+}
+
+function poll() {
+  api('/api/bot/logs?id=' + id + '&from=' + next).then(d => {
+    if (d.lines.length) {
+      const bottom = con.scrollTop + con.clientHeight >= con.scrollHeight - 30;
+      d.lines.forEach(addLine);
+      if (bottom) con.scrollTop = con.scrollHeight;
+    }
+    next = d.next;
+    const on = d.running;
+    const st = document.getElementById('s-durum');
+    st.textContent = on ? 'Çalışıyor' : 'Kapalı';
+    st.style.color = on ? 'var(--green)' : 'var(--red)';
+    document.getElementById('s-up').textContent = on ? fmtUp(d.uptime) : '-';
+    document.getElementById('s-mem').textContent = on ? fmtMem(d.mem) : '-';
+    document.getElementById('b-start').disabled = on;
+    document.getElementById('b-stop').disabled = !on;
+    document.getElementById('b-kill').disabled = !on;
+  }).catch(() => {});
+}
+setInterval(poll, 1000); poll();
+
+meReady.then(() => {
+  if (!can('bots.control')) {
+    ['b-start', 'b-restart', 'b-stop', 'b-kill'].forEach(x => { document.getElementById(x).disabled = true; });
+    cmd.disabled = true;
+    cmd.placeholder = 'Konsola komut gönderme yetkin yok';
+  }
+});
+</script>
+</body>
+</html>

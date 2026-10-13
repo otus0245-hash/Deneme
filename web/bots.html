@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Botlar - Bot Panel</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header id="top"></header>
+<div class="wrap">
+  <nav id="nav"></nav>
+  <main>
+    <div class="summary">
+      <div class="card"><em>Panel belleği</em><strong id="m-panel">-</strong></div>
+      <div class="card"><em>Botların toplamı</em><strong id="m-bots">-</strong></div>
+      <div class="card">
+        <em>Sistem (kullanılan / toplam)</em>
+        <strong id="m-sys">-</strong>
+        <div class="bar"><i id="m-bar"></i></div>
+      </div>
+    </div>
+
+    <section class="card">
+      <div class="head">
+        <span>Botlar</span><span class="sp"></span>
+        <button id="btn-new" onclick="openDlg(null)" hidden>Yeni bot</button>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Ad</th><th>Başlangıç dosyası</th><th>Süre</th><th>Bellek</th><th></th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="empty" hidden>Henüz bot yok. "Yeni bot" ile ilkini oluştur.</div>
+    </section>
+  </main>
+</div>
+
+<dialog id="dlg">
+  <h3 id="dlg-title"></h3>
+  <label for="f-name">Bot adı</label>
+  <input type="text" id="f-name" maxlength="40" autocomplete="off">
+  <label for="f-startup">Başlangıç dosyası</label>
+  <input type="text" id="f-startup" value="main.py" autocomplete="off">
+  <div class="foot">
+    <button class="b-ghost" onclick="dlg.close()">Vazgeç</button>
+    <button id="f-save" onclick="save()">Kaydet</button>
+  </div>
+</dialog>
+
+<script src="/static/common.js"></script>
+<script>
+layout('bots');
+const dlg = document.getElementById('dlg');
+let editing = null;
+
+function power(id, a) {
+  api('/api/bot/' + a + '?id=' + id, { method: 'POST' }).then(load).catch(e => toast(e.message, true));
+}
+
+function render(list) {
+  const rows = document.getElementById('rows');
+  rows.replaceChildren(...list.map(b => el('tr', {},
+    el('td', {}, el('div', { class: 'namecell' },
+      el('span', { class: 'dot' + (b.running ? ' on' : '') }),
+      el('a', { href: '/console?id=' + b.id }, b.name))),
+    el('td', { class: 'muted' }, b.startup),
+    el('td', {}, b.running ? fmtUp(b.uptime) : '-'),
+    el('td', {}, b.running ? fmtMem(b.mem) : '-'),
+    el('td', { class: 'act' },
+      !can('bots.control') ? null : b.running
+        ? el('button', { class: 'sm b-warn', onclick: () => power(b.id, 'stop') }, 'Durdur')
+        : el('button', { class: 'sm b-green', onclick: () => power(b.id, 'start') }, 'Başlat'),
+      el('a', { class: 'btn sm b-ghost', href: '/console?id=' + b.id }, 'Konsol'),
+      !can('files.view') ? null : el('a', { class: 'btn sm b-ghost', href: '/files?id=' + b.id }, 'Dosyalar'),
+      !can('bots.edit') ? null : el('button', { class: 'sm b-ghost', onclick: () => openDlg(b) }, 'Düzenle'),
+      !can('bots.delete') ? null : el('button', { class: 'sm b-red', onclick: () => del(b) }, 'Sil')
+    )
+  )));
+  document.getElementById('empty').hidden = list.length > 0;
+}
+
+function load() {
+  return api('/api/bots').then(render).catch(e => {
+    const em = document.getElementById('empty');
+    em.textContent = e.message;
+    em.hidden = false;
+  });
+}
+
+function openDlg(b) {
+  editing = b;
+  document.getElementById('dlg-title').textContent = b ? 'Botu düzenle' : 'Yeni bot';
+  document.getElementById('f-name').value = b ? b.name : '';
+  document.getElementById('f-startup').value = b ? b.startup : 'main.py';
+  dlg.showModal();
+  document.getElementById('f-name').focus();
+}
+
+async function save() {
+  const body = JSON.stringify({
+    name: document.getElementById('f-name').value,
+    startup: document.getElementById('f-startup').value
+  });
+  const url = editing ? '/api/bots/update?id=' + editing.id : '/api/bots/create';
+  try {
+    await api(url, { method: 'POST', body });
+    dlg.close();
+    toast(editing ? 'Bot güncellendi' : 'Bot oluşturuldu');
+    load();
+  } catch (e) { toast(e.message, true); }
+}
+
+document.getElementById('f-name').addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
+
+async function del(b) {
+  if (!confirm('"' + b.name + '" botu ve tüm dosyaları silinecek. Emin misin?')) return;
+  try {
+    await api('/api/bots/delete?id=' + b.id, { method: 'POST' });
+    toast('Bot silindi');
+    load();
+  } catch (e) { toast(e.message, true); }
+}
+
+function loadStats() {
+  api('/api/stats').then(s => {
+    document.getElementById('m-panel').textContent = fmtMem(s.panel_kb);
+    document.getElementById('m-bots').textContent = s.bots_kb ? fmtMem(s.bots_kb) : '0.0 MB';
+    if (s.sys_total_kb) {
+      const gb = kb => (kb / 1048576).toFixed(1);
+      const pct = Math.round(s.sys_used_kb * 100 / s.sys_total_kb);
+      document.getElementById('m-sys').textContent = gb(s.sys_used_kb) + ' / ' + gb(s.sys_total_kb) + ' GB (%' + pct + ')';
+      const bar = document.getElementById('m-bar');
+      bar.style.width = pct + '%';
+      bar.style.background = pct > 85 ? 'var(--red)' : 'var(--blue)';
+    }
+  }).catch(() => {});
+}
+
+meReady.then(() => {
+  document.getElementById('btn-new').hidden = !can('bots.create');
+  load();
+  setInterval(load, 2000);
+  if (can('bots.view')) {
+    loadStats();
+    setInterval(loadStats, 2000);
+  }
+});
+</script>
+</body>
+</html>
